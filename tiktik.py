@@ -13,10 +13,9 @@ DATA_FILE = 'tiktok_farm_v2.json'
 
 st.set_page_config(page_title="TikTok Farm Pro", page_icon="🚀", layout="wide")
 
-# CSS Tùy chỉnh để nút Copy to hơn trên Mobile
+# CSS Tùy chỉnh: Nút Copy to & Màu sắc
 st.markdown("""
     <style>
-    /* Tăng kích thước nút Copy trong st.code */
     button[title="Copy to clipboard"] {
         font-size: 1.2rem !important; 
         padding: 10px !important;
@@ -24,8 +23,26 @@ st.markdown("""
     .stCode {
         font-size: 16px !important;
     }
+    /* Highlight cho các trạng thái */
+    .status-badge {
+        font-weight: bold;
+        padding: 5px 10px;
+        border-radius: 5px;
+    }
     </style>
 """, unsafe_allow_html=True)
+
+# ==========================================
+# HELPER: ICON TRẠNG THÁI
+# ==========================================
+def get_status_config(status):
+    """Trả về Icon và Thứ tự ưu tiên sắp xếp"""
+    # Priority: Số càng nhỏ càng hiện lên đầu
+    if status == "Live": return "🟢", 0 
+    if status == "Nuôi": return "🟡", 1
+    if status == "Shadowban": return "❌", 2
+    if status == "Die": return "💀", 3
+    return "⚪", 4 # Mặc định
 
 # ==========================================
 # BACKEND: XỬ LÝ DỮ LIỆU
@@ -54,7 +71,7 @@ def load_data():
     try:
         with open(DATA_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            # Đảm bảo các trường dữ liệu luôn tồn tại
+            # Migration: Đảm bảo field không thiếu
             for item in data:
                 if "password" not in item: item["password"] = ""
                 if "proxy_pass" not in item: item["proxy_pass"] = ""
@@ -140,21 +157,28 @@ def main_app():
         if not raw_data:
             st.info("Chưa có account nào.")
         else:
-            df = pd.DataFrame(raw_data)
+            # --- 1. XỬ LÝ SẮP XẾP DATA (LIVE LÊN ĐẦU) ---
+            # Thêm cột priority để sort
+            for item in raw_data:
+                icon, priority = get_status_config(item.get('status', 'Nuôi'))
+                item['_sort_priority'] = priority
             
-            # 1. Bảng chỉnh sửa số liệu (Editor)
-            st.subheader("1. Cập nhật chỉ số (Sửa trực tiếp)")
+            # Sort data: Priority thấp lên đầu (Live=0) -> Tên máy
+            sorted_data = sorted(raw_data, key=lambda x: (x['_sort_priority'], x['id']))
             
+            df = pd.DataFrame(sorted_data).drop(columns=['_sort_priority'])
+            
+            # --- 2. BẢNG EDITOR ---
+            st.subheader("1. Cập nhật chỉ số")
             if "proxy_exp" in df.columns:
                 df["proxy_exp"] = pd.to_datetime(df["proxy_exp"], errors='coerce').dt.date
-            
-            # --- ĐÃ SỬA LỖI TẠI ĐÂY ---
+
             edited_df = st.data_editor(
                 df,
                 column_config={
                     "status": st.column_config.SelectboxColumn("Trạng thái", options=["Live", "Shadowban", "Die", "Nuôi"], width="small"),
                     "niche": st.column_config.TextColumn("Chủ đề"),
-                    "password": st.column_config.TextColumn("Pass TikTok"), # Đã bỏ tham số type="default" gây lỗi
+                    "password": st.column_config.TextColumn("Pass TikTok"),
                     "proxy_pass": st.column_config.TextColumn("Pass Proxy"),
                     "gmv": st.column_config.NumberColumn("GMV ($)", format="$%.2f"),
                     "id": "Tên máy",
@@ -166,14 +190,18 @@ def main_app():
                 key="editor"
             )
 
-            if st.button("💾 Lưu thay đổi bảng trên", type="primary"):
+            if st.button("💾 Lưu thay đổi", type="primary"):
                 try:
                     save_list = edited_df.to_dict(orient='records')
                     for item in save_list:
+                        # Format date
                         if isinstance(item.get('proxy_exp'), (date, datetime)):
                             item['proxy_exp'] = item['proxy_exp'].strftime('%Y-%m-%d')
                         else:
                             item['proxy_exp'] = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+                        # Remove cột tạm nếu có
+                        if '_sort_priority' in item: del item['_sort_priority']
+                            
                     save_data(save_list)
                     st.success("Đã lưu dữ liệu!")
                     st.rerun()
@@ -182,20 +210,29 @@ def main_app():
 
             st.divider()
 
-            # 2. KHU VỰC COPY NHANH (MOBILE MODE)
-            st.subheader("📋 Copy Nhanh (Mobile Mode)")
-            st.info("Bấm vào biểu tượng 📄 ở góc phải mỗi ô để copy.")
+            # --- 3. KHU VỰC COPY NHANH (MOBILE) ---
+            st.subheader("📋 Copy Nhanh (Mobile)")
             
-            search = st.text_input("🔍 Tìm máy hoặc user để copy:", placeholder="Nhập tên máy...")
+            # Bộ lọc (Filter) theo yêu cầu
+            col_search, col_filter = st.columns([1, 1])
+            search = col_search.text_input("🔍 Tìm kiếm:", placeholder="Tên máy, User...")
+            filter_status = col_filter.multiselect("Lọc trạng thái:", ["Live", "Nuôi", "Shadowban", "Die"])
             
-            display_data = raw_data
+            # Logic lọc hiển thị
+            display_data = sorted_data # Mặc định lấy danh sách đã sắp xếp
+            
             if search:
-                display_data = [d for d in raw_data if search.lower() in d['id'].lower() or search.lower() in d['username'].lower()]
+                display_data = [d for d in display_data if search.lower() in d['id'].lower() or search.lower() in d['username'].lower()]
+            
+            if filter_status:
+                display_data = [d for d in display_data if d['status'] in filter_status]
 
+            # Hiển thị Card
             for acc in display_data:
-                status_icon = "🟢" if acc['status'] == "Live" else "🔴"
+                # Lấy icon theo yêu cầu mới
+                icon, _ = get_status_config(acc.get('status', 'Nuôi'))
                 
-                with st.expander(f"{status_icon} {acc['id']} | {acc['username']}", expanded=True):
+                with st.expander(f"{icon} {acc['id']} | {acc['username']}", expanded=True):
                     c1, c2 = st.columns(2)
                     with c1:
                         st.caption("User TikTok")
@@ -206,7 +243,7 @@ def main_app():
                     
                     c3, c4 = st.columns(2)
                     with c3:
-                        st.caption("Proxy IP:Port")
+                        st.caption("Proxy IP")
                         st.code(acc.get('proxy_ip', ''), language=None)
                     with c4:
                         st.caption("Proxy Pass")
@@ -236,23 +273,21 @@ def main_app():
             if niche_opt == "Nhập thủ công...":
                 with n2:
                     custom_niche = st.text_input("👉 Nhập tên chủ đề tại đây:")
-                    if custom_niche:
-                        final_niche = custom_niche
-                    else:
-                        final_niche = "Chưa đặt tên"
+                    if custom_niche: final_niche = custom_niche
+                    else: final_niche = "Chưa đặt tên"
 
             st.markdown("---")
             st.write("Proxy Info:")
             p1, p2 = st.columns(2)
             new_ip = p1.text_input("IP:Port")
-            new_prox_pass = p2.text_input("Proxy Password (nếu có)")
+            new_prox_pass = p2.text_input("Proxy Password")
             new_exp = st.date_input("Ngày hết hạn Proxy")
 
             if st.form_submit_button("Thêm ngay"):
                 if new_id and new_user:
                     new_obj = {
                         "id": new_id,
-                        "status": "Nuôi",
+                        "status": "Nuôi", # Mặc định là Nuôi
                         "username": new_user,
                         "password": new_pass,
                         "niche": final_niche,
