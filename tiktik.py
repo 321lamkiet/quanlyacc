@@ -37,6 +37,11 @@ st.markdown("""
         color: #00BFFF;
         font-weight: bold;
     }
+    /* Style cho nút xóa */
+    div[data-testid="stExpander"] {
+        border: 1px solid #444;
+        border-radius: 8px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -182,18 +187,15 @@ def main_app():
             sorted_data = sorted(raw_data, key=lambda x: (x['_sort_priority'], x['id']))
             df = pd.DataFrame(sorted_data).drop(columns=['_sort_priority'])
             
-            # --- TÍNH NĂNG MỚI: TẠO CỘT SỐ NGÀY ĐỂ EDIT ---
+            # --- 1. EDITOR TABLE ---
             st.subheader("1. Cập nhật thông tin")
             
             today = datetime.now().date()
-            
-            # 1. Chuyển đổi dữ liệu ngày tháng
             if "proxy_exp" in df.columns:
                 df["proxy_exp"] = pd.to_datetime(df["proxy_exp"], errors='coerce').dt.date
             
-            # 2. Tạo cột 'days_farmed' từ 'date_added' để hiển thị
+            # Tạo cột days_farmed
             if "date_added" in df.columns:
-                # Hàm tính số ngày: Hôm nay - Ngày tạo
                 df["days_farmed"] = df["date_added"].apply(
                     lambda x: (today - pd.to_datetime(x).date()).days if x else 0
                 )
@@ -202,19 +204,12 @@ def main_app():
                 df,
                 column_config={
                     "status": st.column_config.SelectboxColumn("Trạng thái", options=["Live", "Shadowban", "Die", "Nuôi"], width="small"),
-                    "days_farmed": st.column_config.NumberColumn(
-                        "Đã nuôi (Ngày)", 
-                        help="Nhập số ngày để chỉnh tuổi thọ Acc",
-                        min_value=0,
-                        step=1,
-                        required=True
-                    ),
+                    "days_farmed": st.column_config.NumberColumn("Đã nuôi (Ngày)", min_value=0, step=1, required=True),
                     "content_type": st.column_config.TextColumn("Loại Content", width="medium"),
                     "niche": st.column_config.TextColumn("Chủ đề"),
                     "password": st.column_config.TextColumn("Pass TikTok"),
                     "proxy_pass": st.column_config.TextColumn("Pass Proxy"),
                     "gmv": st.column_config.NumberColumn("GMV ($)", format="$%.2f"),
-                    # Ẩn cột ngày gốc đi cho đỡ rối, chỉ hiện cột số ngày
                     "date_added": None, 
                     "id": "Tên máy",
                     "username": "User"
@@ -227,32 +222,55 @@ def main_app():
             if st.button("💾 Lưu thay đổi", type="primary"):
                 try:
                     save_list = edited_df.to_dict(orient='records')
-                    
-                    # --- LOGIC QUAN TRỌNG: TÍNH LẠI NGÀY TỪ SỐ NGÀY NHẬP VÀO ---
                     for item in save_list:
-                        # 1. Tính lại date_added dựa trên days_farmed
+                        # Logic chỉnh ngày nuôi
                         if 'days_farmed' in item:
                             new_days = int(item['days_farmed'])
-                            # Ngày bắt đầu = Hôm nay - Số ngày đã nuôi
                             new_start_date = today - timedelta(days=new_days)
                             item['date_added'] = new_start_date.strftime('%Y-%m-%d')
-                            # Xóa cột tạm days_farmed trước khi lưu
                             del item['days_farmed']
 
-                        # 2. Format cột Proxy Exp
                         if isinstance(item.get('proxy_exp'), (date, datetime)):
                             item['proxy_exp'] = item['proxy_exp'].strftime('%Y-%m-%d')
                         elif not item.get('proxy_exp'):
                             item['proxy_exp'] = (today + timedelta(days=1)).strftime('%Y-%m-%d')
                         
-                        # 3. Dọn dẹp cột sort
                         if '_sort_priority' in item: del item['_sort_priority']
                             
                     save_data(save_list)
-                    st.success("Đã lưu dữ liệu & Cập nhật ngày nuôi!")
+                    st.success("Đã lưu dữ liệu!")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Lỗi: {e}")
+
+            st.divider()
+
+            # --- TÍNH NĂNG MỚI: XÓA ACCOUNT HÀNG LOẠT ---
+            st.subheader("🗑️ Xóa Account (Hàng loạt)")
+            
+            with st.expander("⚠️ Mở khu vực Xóa Account", expanded=False):
+                st.warning("Hành động này không thể hoàn tác. Hãy kiểm tra kỹ!")
+                
+                # Tạo list option dạng: "iPhone 7-A | user_01"
+                delete_options = [f"{acc['id']} | {acc['username']} ({acc['status']})" for acc in sorted_data]
+                
+                selected_to_delete = st.multiselect(
+                    "Chọn các máy muốn xóa vĩnh viễn:",
+                    options=delete_options
+                )
+                
+                if selected_to_delete:
+                    st.write(f"Đang chọn xóa {len(selected_to_delete)} account.")
+                    if st.button("🔥 XÁC NHẬN XÓA NGAY"):
+                        # Lấy danh sách ID cần xóa (Tách chuỗi lấy phần đầu)
+                        ids_to_remove = [s.split(" | ")[0] for s in selected_to_delete]
+                        
+                        # Lọc giữ lại những acc KHÔNG nằm trong danh sách xóa
+                        new_data_list = [d for d in raw_data if d['id'] not in ids_to_remove]
+                        
+                        save_data(new_data_list)
+                        st.success(f"Đã xóa thành công {len(ids_to_remove)} account!")
+                        st.rerun()
 
             st.divider()
 
@@ -271,22 +289,16 @@ def main_app():
 
             for acc in display_data:
                 icon, _ = get_status_config(acc.get('status', 'Nuôi'))
-                
-                # Tính lại ngày để hiển thị
                 days_diff = 0
                 try:
                     start_date = datetime.strptime(str(acc.get('date_added')), '%Y-%m-%d').date()
                     days_diff = (today - start_date).days
                 except: pass
 
-                # Header thẻ Card
                 with st.expander(f"{icon} {acc['id']} | {acc['username']}", expanded=True):
-                    
                     info_html = ""
                     if acc.get('content_type'):
                         info_html += f"<span class='content-tag'>🎬 {acc['content_type']}</span> "
-                    
-                    # Luôn hiển thị số ngày nuôi
                     info_html += f" | <span class='farm-days'>⏳ Đã nuôi: {days_diff} ngày</span>"
                     
                     if info_html:
@@ -355,15 +367,12 @@ def main_app():
                 final_exp_date = datetime.now().date() + timedelta(days=days_to_add)
                 st.info(f"📅 Proxy đến ngày: **{final_exp_date.strftime('%Y-%m-%d')}**")
 
-            # --- TÍNH NĂNG MỚI: NHẬP SỐ NGÀY ĐÃ NUÔI TRƯỚC ĐÓ ---
             st.markdown("---")
-            init_days = st.number_input("⏳ Account này đã nuôi trước đó bao nhiêu ngày?", min_value=0, value=0, help="Nếu là acc mới thì để 0")
+            init_days = st.number_input("⏳ Đã nuôi trước đó bao nhiêu ngày?", min_value=0, value=0)
 
             if st.form_submit_button("Thêm ngay"):
                 if new_id and new_user:
-                    # Tính ngày bắt đầu lùi về quá khứ
                     start_date_val = datetime.now().date() - timedelta(days=init_days)
-                    
                     new_obj = {
                         "id": new_id,
                         "status": "Nuôi",
@@ -375,14 +384,14 @@ def main_app():
                         "proxy_ip": new_ip,
                         "proxy_pass": new_prox_pass,
                         "proxy_exp": final_exp_date.strftime('%Y-%m-%d'),
-                        "date_added": start_date_val.strftime('%Y-%m-%d'), # Lưu ngày đã lùi
+                        "date_added": start_date_val.strftime('%Y-%m-%d'),
                         "views": 0,
                         "gmv": 0.0,
                     }
                     data = load_data()
                     data.append(new_obj)
                     save_data(data)
-                    st.success(f"Đã thêm {new_id} (Đã nuôi {init_days} ngày)")
+                    st.success(f"Đã thêm {new_id} thành công!")
                 else:
                     st.error("Thiếu Tên máy hoặc Username!")
 
