@@ -13,7 +13,7 @@ DATA_FILE = 'tiktok_farm_v2.json'
 
 st.set_page_config(page_title="TikTok Farm Pro", page_icon="🚀", layout="wide")
 
-# CSS Tùy chỉnh: Nút Copy to & Màu sắc
+# CSS Tùy chỉnh
 st.markdown("""
     <style>
     button[title="Copy to clipboard"] {
@@ -23,11 +23,19 @@ st.markdown("""
     .stCode {
         font-size: 16px !important;
     }
-    /* Highlight cho các trạng thái */
     .status-badge {
         font-weight: bold;
         padding: 5px 10px;
         border-radius: 5px;
+    }
+    .farm-days {
+        color: #FFD700; 
+        font-weight: bold;
+        font-size: 15px;
+    }
+    .content-tag {
+        color: #00BFFF; /* Màu xanh dương nhạt cho Content */
+        font-weight: bold;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -36,13 +44,11 @@ st.markdown("""
 # HELPER: ICON TRẠNG THÁI
 # ==========================================
 def get_status_config(status):
-    """Trả về Icon và Thứ tự ưu tiên sắp xếp"""
-    # Priority: Số càng nhỏ càng hiện lên đầu
     if status == "Live": return "🟢", 0 
     if status == "Nuôi": return "🟡", 1
     if status == "Shadowban": return "❌", 2
     if status == "Die": return "💀", 3
-    return "⚪", 4 # Mặc định
+    return "⚪", 4
 
 # ==========================================
 # BACKEND: XỬ LÝ DỮ LIỆU
@@ -55,10 +61,12 @@ def load_data():
             "username": "user_us_01",
             "password": "pass_tiktok_123",
             "niche": "Health",
+            "content_type": "Reup Video", # Trường dữ liệu mới
             "country": "US",
             "proxy_ip": "192.168.1.10:8000",
             "proxy_pass": "proxypass1",
             "proxy_exp": (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d'),
+            "date_added": (datetime.now() - timedelta(days=5)).strftime('%Y-%m-%d'),
             "views": 1500,
             "gmv": 12.5
         }
@@ -71,10 +79,13 @@ def load_data():
     try:
         with open(DATA_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            # Migration: Đảm bảo field không thiếu
+            # Migration: Đảm bảo field mới không bị thiếu với data cũ
+            today_str = datetime.now().strftime('%Y-%m-%d')
             for item in data:
                 if "password" not in item: item["password"] = ""
                 if "proxy_pass" not in item: item["proxy_pass"] = ""
+                if "date_added" not in item: item["date_added"] = today_str
+                if "content_type" not in item: item["content_type"] = "" # Mặc định để trống
             return data
     except:
         return default_data
@@ -131,8 +142,17 @@ def main_app():
         
         c1, c2, c3 = st.columns(3)
         c1.metric("Tổng Acc", len(df))
-        live_count = len(df[df['status'] == 'Live'])
-        c2.metric("Đang sống", live_count)
+        
+        farm_accs = df[df['status'] == 'Nuôi']
+        avg_days = 0
+        if not farm_accs.empty and 'date_added' in farm_accs.columns:
+            today = datetime.now().date()
+            dates = pd.to_datetime(farm_accs['date_added'], errors='coerce').dt.date
+            total_days = sum([(today - d).days for d in dates if pd.notnull(d)])
+            avg_days = int(total_days / len(farm_accs)) if len(farm_accs) > 0 else 0
+
+        c2.metric("Đang nuôi", len(farm_accs), delta=f"TB: {avg_days} ngày")
+        
         total_gmv = pd.to_numeric(df.get('gmv', 0), errors='coerce').sum()
         c3.metric("Doanh thu", f"${total_gmv:.2f}")
 
@@ -157,27 +177,28 @@ def main_app():
         if not raw_data:
             st.info("Chưa có account nào.")
         else:
-            # --- 1. XỬ LÝ SẮP XẾP DATA (LIVE LÊN ĐẦU) ---
-            # Thêm cột priority để sort
+            # Sort Logic
             for item in raw_data:
                 icon, priority = get_status_config(item.get('status', 'Nuôi'))
                 item['_sort_priority'] = priority
-            
-            # Sort data: Priority thấp lên đầu (Live=0) -> Tên máy
             sorted_data = sorted(raw_data, key=lambda x: (x['_sort_priority'], x['id']))
-            
             df = pd.DataFrame(sorted_data).drop(columns=['_sort_priority'])
             
-            # --- 2. BẢNG EDITOR ---
-            st.subheader("1. Cập nhật chỉ số")
+            # --- 1. EDITOR TABLE ---
+            st.subheader("1. Cập nhật thông tin")
+            
             if "proxy_exp" in df.columns:
                 df["proxy_exp"] = pd.to_datetime(df["proxy_exp"], errors='coerce').dt.date
+            if "date_added" in df.columns:
+                df["date_added"] = pd.to_datetime(df["date_added"], errors='coerce').dt.date
 
             edited_df = st.data_editor(
                 df,
                 column_config={
                     "status": st.column_config.SelectboxColumn("Trạng thái", options=["Live", "Shadowban", "Die", "Nuôi"], width="small"),
+                    "content_type": st.column_config.TextColumn("Loại Content", help="Acc này làm dạng video gì?", width="medium"), # Cột mới
                     "niche": st.column_config.TextColumn("Chủ đề"),
+                    "date_added": st.column_config.DateColumn("Ngày bắt đầu"),
                     "password": st.column_config.TextColumn("Pass TikTok"),
                     "proxy_pass": st.column_config.TextColumn("Pass Proxy"),
                     "gmv": st.column_config.NumberColumn("GMV ($)", format="$%.2f"),
@@ -186,20 +207,18 @@ def main_app():
                 },
                 hide_index=True,
                 num_rows="dynamic",
-                use_container_width=True,
-                key="editor"
+                use_container_width=True
             )
 
             if st.button("💾 Lưu thay đổi", type="primary"):
                 try:
                     save_list = edited_df.to_dict(orient='records')
                     for item in save_list:
-                        # Format date
-                        if isinstance(item.get('proxy_exp'), (date, datetime)):
-                            item['proxy_exp'] = item['proxy_exp'].strftime('%Y-%m-%d')
-                        else:
-                            item['proxy_exp'] = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
-                        # Remove cột tạm nếu có
+                        for date_col in ['proxy_exp', 'date_added']:
+                            if isinstance(item.get(date_col), (date, datetime)):
+                                item[date_col] = item[date_col].strftime('%Y-%m-%d')
+                            elif not item.get(date_col):
+                                item[date_col] = datetime.now().strftime('%Y-%m-%d')
                         if '_sort_priority' in item: del item['_sort_priority']
                             
                     save_data(save_list)
@@ -210,29 +229,46 @@ def main_app():
 
             st.divider()
 
-            # --- 3. KHU VỰC COPY NHANH (MOBILE) ---
+            # --- 2. MOBILE COPY CARD ---
             st.subheader("📋 Copy Nhanh (Mobile)")
             
-            # Bộ lọc (Filter) theo yêu cầu
             col_search, col_filter = st.columns([1, 1])
             search = col_search.text_input("🔍 Tìm kiếm:", placeholder="Tên máy, User...")
             filter_status = col_filter.multiselect("Lọc trạng thái:", ["Live", "Nuôi", "Shadowban", "Die"])
             
-            # Logic lọc hiển thị
-            display_data = sorted_data # Mặc định lấy danh sách đã sắp xếp
-            
+            display_data = sorted_data
             if search:
                 display_data = [d for d in display_data if search.lower() in d['id'].lower() or search.lower() in d['username'].lower()]
-            
             if filter_status:
                 display_data = [d for d in display_data if d['status'] in filter_status]
 
-            # Hiển thị Card
+            today = datetime.now().date()
+
             for acc in display_data:
-                # Lấy icon theo yêu cầu mới
                 icon, _ = get_status_config(acc.get('status', 'Nuôi'))
-                
-                with st.expander(f"{icon} {acc['id']} | {acc['username']}", expanded=True):
+                days_farmed_str = ""
+                try:
+                    start_date = datetime.strptime(str(acc.get('date_added')), '%Y-%m-%d').date()
+                    days_diff = (today - start_date).days
+                    if acc.get('status') in ["Nuôi", "Live"]:
+                        days_farmed_str = f" • ⏳ {days_diff} ngày"
+                except: pass
+
+                # Header thẻ Card
+                with st.expander(f"{icon} {acc['id']} | {acc['username']} {days_farmed_str}", expanded=True):
+                    
+                    # Hiển thị Loại Content & Ngày nuôi nổi bật
+                    info_html = ""
+                    if acc.get('content_type'):
+                        info_html += f"<span class='content-tag'>🎬 {acc['content_type']}</span> "
+                    
+                    if acc.get('status') == "Nuôi":
+                        info_html += f" | <span class='farm-days'>🐣 Nuôi ngày {days_diff}</span>"
+                    
+                    if info_html:
+                        st.markdown(info_html, unsafe_allow_html=True)
+                        st.divider() # Kẻ ngang phân cách cho đẹp
+
                     c1, c2 = st.columns(2)
                     with c1:
                         st.caption("User TikTok")
@@ -259,7 +295,6 @@ def main_app():
             new_country = c2.selectbox("Quốc gia", ["US", "UK", "FR", "VN"])
             
             st.markdown("---")
-            st.write("Tk TikTok:")
             t1, t2 = st.columns(2)
             new_user = t1.text_input("Username")
             new_pass = t2.text_input("Password TikTok")
@@ -268,41 +303,57 @@ def main_app():
             n1, n2 = st.columns([1, 1])
             with n1:
                 niche_opt = st.selectbox("Chọn Chủ đề", ["Sức khỏe", "Gia dụng", "Thời trang", "Nhập thủ công..."])
-            
             final_niche = niche_opt
             if niche_opt == "Nhập thủ công...":
                 with n2:
-                    custom_niche = st.text_input("👉 Nhập tên chủ đề tại đây:")
-                    if custom_niche: final_niche = custom_niche
-                    else: final_niche = "Chưa đặt tên"
+                    custom_niche = st.text_input("👉 Nhập tên chủ đề:")
+                    final_niche = custom_niche if custom_niche else "Chưa đặt tên"
+
+            # --- Ô NHẬP LOẠI CONTENT MỚI ---
+            st.markdown("---")
+            new_content_type = st.text_input("🎬 Loại Content đang xây dựng (VD: Reup Phim, Slide Ảnh...)", placeholder="Nhập loại content...")
 
             st.markdown("---")
-            st.write("Proxy Info:")
+            st.write("Cấu hình Proxy:")
             p1, p2 = st.columns(2)
             new_ip = p1.text_input("IP:Port")
             new_prox_pass = p2.text_input("Proxy Password")
-            new_exp = st.date_input("Ngày hết hạn Proxy")
+            
+            st.write("Thời hạn Proxy:")
+            proxy_duration_opt = st.radio(
+                "Chọn thời gian:", ["Nhập ngày cụ thể", "30 ngày", "60 ngày", "90 ngày"], 
+                horizontal=True, label_visibility="collapsed"
+            )
+
+            final_exp_date = None
+            if proxy_duration_opt == "Nhập ngày cụ thể":
+                final_exp_date = st.date_input("Chọn ngày hết hạn")
+            else:
+                days_to_add = int(proxy_duration_opt.split()[0])
+                final_exp_date = datetime.now().date() + timedelta(days=days_to_add)
+                st.info(f"📅 Proxy đến ngày: **{final_exp_date.strftime('%Y-%m-%d')}**")
 
             if st.form_submit_button("Thêm ngay"):
                 if new_id and new_user:
                     new_obj = {
                         "id": new_id,
-                        "status": "Nuôi", # Mặc định là Nuôi
+                        "status": "Nuôi",
                         "username": new_user,
                         "password": new_pass,
                         "niche": final_niche,
+                        "content_type": new_content_type, # Lưu loại content
                         "country": new_country,
                         "proxy_ip": new_ip,
                         "proxy_pass": new_prox_pass,
-                        "proxy_exp": new_exp.strftime('%Y-%m-%d'),
+                        "proxy_exp": final_exp_date.strftime('%Y-%m-%d'),
+                        "date_added": datetime.now().strftime('%Y-%m-%d'),
                         "views": 0,
                         "gmv": 0.0,
-                        "last_active": datetime.now().strftime('%Y-%m-%d')
                     }
                     data = load_data()
                     data.append(new_obj)
                     save_data(data)
-                    st.success(f"Đã thêm {new_id} - Chủ đề: {final_niche}")
+                    st.success(f"Đã thêm {new_id} thành công!")
                 else:
                     st.error("Thiếu Tên máy hoặc Username!")
 
