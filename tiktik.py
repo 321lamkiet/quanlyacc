@@ -2,54 +2,45 @@ import streamlit as st
 import pandas as pd
 import json
 import os
-import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 # ==========================================
 # CẤU HÌNH & AUTH
 # ==========================================
 ADMIN_USER = "admin"
-ADMIN_PASS = "mmo888"  # <--- Đổi pass ở đây
+ADMIN_PASS = "1" 
 DATA_FILE = 'tiktok_farm_v2.json'
 
 st.set_page_config(page_title="TikTok Farm Pro", page_icon="🚀", layout="wide")
 
 # ==========================================
-# BACKEND: XỬ LÝ DỮ LIỆU
+# BACKEND: XỬ LÝ DỮ LIỆU AN TOÀN
 # ==========================================
 def load_data():
     if not os.path.exists(DATA_FILE):
-        # Dữ liệu mẫu phong phú hơn cho bản Pro
+        # Dữ liệu mẫu ban đầu
         data = [
             {
                 "id": "iPhone 7-A",
                 "status": "Live",
                 "username": "user_us_01",
-                "niche": "Health", # Chủ đề
+                "niche": "Health",
                 "country": "US",
                 "proxy_ip": "192.168.1.10",
                 "proxy_exp": (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d'),
                 "views": 1500,
                 "gmv": 12.5,
                 "last_active": "2023-10-25"
-            },
-            {
-                "id": "iPhone 8-B",
-                "status": "Shadowban",
-                "username": "user_fr_09",
-                "niche": "Gadget",
-                "country": "FR",
-                "proxy_ip": "10.0.0.5",
-                "proxy_exp": (datetime.now() + timedelta(days=15)).strftime('%Y-%m-%d'),
-                "views": 200,
-                "gmv": 0.0,
-                "last_active": "2023-10-24"
             }
         ]
         save_data(data)
         return data
-    with open(DATA_FILE, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    
+    try:
+        with open(DATA_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except:
+        return []
 
 def save_data(data):
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
@@ -82,7 +73,7 @@ def check_login():
 # GIAO DIỆN CHÍNH
 # ==========================================
 def main_app():
-    # Sidebar
+    # Sidebar Menu
     with st.sidebar:
         st.title("🎛️ Menu")
         menu = st.radio("Chọn chức năng:", ["Dashboard Tổng quan", "Quản lý Account (Table)", "Thêm Account Mới"])
@@ -91,126 +82,149 @@ def main_app():
             st.session_state["authenticated"] = False
             st.rerun()
 
-    data_list = load_data()
-    df = pd.DataFrame(data_list)
-
+    # Load dữ liệu thô từ JSON
+    raw_data = load_data()
+    
     # --- TAB 1: DASHBOARD ---
     if menu == "Dashboard Tổng quan":
         st.title("🚀 Tổng quan hiệu suất Farm")
         
-        # Metrics hàng trên
-        total_acc = len(df)
-        live_acc = len(df[df['status'] == 'Live'])
-        total_gmv = df['gmv'].sum() if 'gmv' in df.columns else 0
-        
+        # Tính toán chỉ số
+        df_dash = pd.DataFrame(raw_data)
+        if not df_dash.empty:
+            total_acc = len(df_dash)
+            live_acc = len(df_dash[df_dash['status'] == 'Live'])
+            total_gmv = df_dash['gmv'].sum() if 'gmv' in df_dash.columns else 0
+        else:
+            total_acc = 0; live_acc = 0; total_gmv = 0
+
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Tổng Acc", total_acc)
-        c2.metric("Acc Live", live_acc, delta=f"{live_acc/total_acc*100:.0f}%")
-        c3.metric("Acc Die/Shadow", total_acc - live_acc, delta_color="inverse")
-        c4.metric("Tổng GMV (Doanh thu)", f"${total_gmv}", delta="Hôm nay")
+        c2.metric("Acc Live", live_acc)
+        c3.metric("Cần xử lý", total_acc - live_acc)
+        c4.metric("Tổng GMV", f"${total_gmv}")
 
         st.divider()
+        st.subheader("⚠️ Cảnh báo Proxy")
         
-        # Cảnh báo Proxy
-        st.subheader("⚠️ Cảnh báo cần xử lý ngay")
-        today = datetime.now().date()
-        warnings = []
-        for acc in data_list:
-            try:
-                exp_date = datetime.strptime(acc['proxy_exp'], '%Y-%m-%d').date()
-                days_left = (exp_date - today).days
-                if days_left <= 3:
-                    warnings.append(f"🔴 **{acc['id']}** ({acc['username']}): Proxy còn {days_left} ngày!")
-            except:
-                warnings.append(f"⚪ **{acc['id']}**: Lỗi định dạng ngày Proxy")
+        has_warning = False
+        today_date = datetime.now().date()
         
-        if warnings:
-            for w in warnings: st.write(w)
-        else:
-            st.success("Hệ thống ổn định, không có cảnh báo.")
+        if not df_dash.empty and 'proxy_exp' in df_dash.columns:
+            for index, row in df_dash.iterrows():
+                try:
+                    # Chuyển string sang date để so sánh
+                    p_date = datetime.strptime(str(row['proxy_exp']), '%Y-%m-%d').date()
+                    days_left = (p_date - today_date).days
+                    
+                    if days_left < 0:
+                        st.error(f"🔴 **{row['id']}**: Proxy đã hết hạn ({days_left} ngày)!")
+                        has_warning = True
+                    elif days_left <= 3:
+                        st.warning(f"🟡 **{row['id']}**: Proxy sắp hết ({days_left} ngày)!")
+                        has_warning = True
+                except:
+                    pass
+        
+        if not has_warning:
+            st.success("Tất cả Proxy đều ổn định.")
 
-    # --- TAB 2: QUẢN LÝ ACCOUNT (EDITOR) ---
+    # --- TAB 2: QUẢN LÝ ACCOUNT (BẢNG EDITOR) ---
     elif menu == "Quản lý Account (Table)":
         st.title("📱 Danh sách & Trạng thái")
-        
-        # Bộ lọc nhanh
-        col_f1, col_f2 = st.columns(2)
-        filter_status = col_f1.multiselect("Lọc theo trạng thái:", ["Live", "Shadowban", "Die", "Nuôi"], default=[])
-        search_txt = col_f2.text_input("Tìm kiếm (ID hoặc User):")
-        
-        # Filter Dataframe
-        df_show = df.copy()
-        if filter_status:
-            df_show = df_show[df_show['status'].isin(filter_status)]
-        if search_txt:
-            df_show = df_show[df_show['id'].str.contains(search_txt, case=False) | df_show['username'].str.contains(search_txt, case=False)]
+        st.info("💡 Bạn có thể sửa trực tiếp mọi ô trong bảng rồi ấn **Lưu thay đổi**.")
 
-        # EDITABLE DATAFRAME (Tính năng đáng tiền nhất)
-        st.info("💡 Mẹo: Bạn có thể sửa trực tiếp Status, GMV, Views ngay trong bảng dưới đây rồi nhấn Save.")
-        
-        edited_df = st.data_editor(
-            df_show,
-            column_config={
-                "status": st.column_config.SelectboxColumn(
-                    "Trạng thái",
-                    options=["Live", "Shadowban", "Die", "Nuôi", "Kháng"],
-                    required=True,
-                ),
-                "gmv": st.column_config.NumberColumn(
-                    "Doanh thu ($)",
-                    format="$%.2f",
-                ),
-                "views": st.column_config.NumberColumn(
-                    "Views",
-                    format="%d",
-                ),
-                "proxy_exp": st.column_config.DateColumn("Hết hạn Proxy"),
-                "id": "Tên máy",
-                "username": "User TikTok"
-            },
-            hide_index=True,
-            num_rows="dynamic", # Cho phép thêm/xóa hàng
-            use_container_width=True
-        )
+        if not raw_data:
+            st.warning("Chưa có dữ liệu nào. Hãy qua tab 'Thêm Account Mới'.")
+        else:
+            df = pd.DataFrame(raw_data)
 
-        # Nút Save Data
-        if st.button("Lưu thay đổi (Save Changes)", type="primary"):
-            # Chuyển đổi format date về string để lưu JSON
-            saved_data = edited_df.to_dict(orient='records')
-            # Format lại date thành string vì data_editor trả về object date
-            for item in saved_data:
-                if isinstance(item['proxy_exp'], (datetime, pd.Timestamp)):
-                     item['proxy_exp'] = item['proxy_exp'].strftime('%Y-%m-%d')
-                if hasattr(item['proxy_exp'], 'strftime'): # Check kỹ hơn
-                     item['proxy_exp'] = item['proxy_exp'].strftime('%Y-%m-%d')
-                else:
-                    item['proxy_exp'] = str(item['proxy_exp'])
+            # --- [QUAN TRỌNG] XỬ LÝ DỮ LIỆU TRƯỚC KHI HIỂN THỊ ĐỂ TRÁNH LỖI ---
+            # 1. Chuyển cột ngày tháng từ String -> Date Object
+            if "proxy_exp" in df.columns:
+                df["proxy_exp"] = pd.to_datetime(df["proxy_exp"], errors='coerce').dt.date
+            
+            # 2. Đảm bảo số liệu là số (tránh lỗi null hoặc string)
+            df["gmv"] = pd.to_numeric(df["gmv"], errors='coerce').fillna(0.0)
+            df["views"] = pd.to_numeric(df["views"], errors='coerce').fillna(0)
 
-            # Logic merge dữ liệu (để giữ lại những dòng bị ẩn do filter)
-            # Ở đây làm đơn giản: Load lại data gốc, update những dòng có ID trùng, giữ nguyên dòng ẩn
-            full_data = load_data()
-            full_map = {item['id']: item for item in full_data}
-            
-            for new_item in saved_data:
-                full_map[new_item['id']] = new_item
-            
-            # Xử lý xóa: Nếu user xóa dòng trong bảng edited, ta cần detect
-            # (Phần này hơi phức tạp với data_editor, tạm thời dùng cơ chế update)
-            
-            save_data(list(full_map.values()))
-            st.success("Đã cập nhật dữ liệu thành công!")
-            st.rerun()
+            # Cấu hình hiển thị bảng
+            edited_df = st.data_editor(
+                df,
+                column_config={
+                    "status": st.column_config.SelectboxColumn(
+                        "Trạng thái",
+                        options=["Live", "Shadowban", "Die", "Nuôi", "Kháng"],
+                        required=True,
+                        width="medium"
+                    ),
+                    "niche": st.column_config.TextColumn(
+                        "Chủ đề (Niche)",
+                        help="Nhập chủ đề kênh (vd: Health, Pet...)",
+                        width="medium"
+                    ),
+                    "gmv": st.column_config.NumberColumn(
+                        "Doanh thu ($)", format="$%.2f"
+                    ),
+                    "views": st.column_config.NumberColumn(
+                        "Views", format="%d"
+                    ),
+                    "proxy_exp": st.column_config.DateColumn(
+                        "Hết hạn Proxy", format="YYYY-MM-DD"
+                    ),
+                    "id": "Tên máy",
+                    "username": "User TikTok",
+                    "country": "Quốc gia"
+                },
+                hide_index=True,
+                num_rows="dynamic",
+                use_container_width=True
+            )
+
+            # Nút Lưu Dữ Liệu
+            if st.button("💾 Lưu thay đổi", type="primary"):
+                try:
+                    # Chuyển DataFrame ngược lại thành List Dictionary
+                    saved_data = edited_df.to_dict(orient='records')
+                    
+                    # --- [QUAN TRỌNG] FORMAT LẠI DATA TRƯỚC KHI LƯU JSON ---
+                    final_data = []
+                    for item in saved_data:
+                        # Convert Date Object -> String (YYYY-MM-DD)
+                        if isinstance(item.get('proxy_exp'), (date, datetime)):
+                            item['proxy_exp'] = item['proxy_exp'].strftime('%Y-%m-%d')
+                        else:
+                            # Nếu null hoặc lỗi, set mặc định ngày mai
+                            item['proxy_exp'] = str(item.get('proxy_exp') or (datetime.now()+timedelta(days=1)).strftime('%Y-%m-%d'))
+                        
+                        final_data.append(item)
+
+                    save_data(final_data)
+                    st.success("✅ Đã cập nhật dữ liệu thành công!")
+                    st.rerun() # Refresh lại trang để nhận data mới
+                except Exception as e:
+                    st.error(f"Lỗi khi lưu: {e}")
 
     # --- TAB 3: THÊM ACCOUNT MỚI ---
     elif menu == "Thêm Account Mới":
         st.title("➕ Thêm thiết bị vào Farm")
+        
         with st.form("add_acc_form"):
             c1, c2 = st.columns(2)
-            new_id = c1.text_input("Tên máy (Ví dụ: iPhone X-01)", placeholder="iPhone...")
-            new_user = c2.text_input("Username TikTok")
+            new_id = c1.text_input("Tên máy (Ví dụ: iPhone 7-A)", placeholder="Nhập tên thiết bị...")
+            new_user = c2.text_input("Username TikTok", placeholder="@username...")
             
             c3, c4 = st.columns(2)
-            new_niche = c3.selectbox("Chủ đề (Niche)", ["Gia dụng", "Mỹ phẩm", "Thời trang", "Sức khỏe", "Giải trí", "Khác"])
+            
+            # --- TÍNH NĂNG MỚI: NICHE TÙY CHỈNH ---
+            niche_options = ["Gia dụng", "Mỹ phẩm", "Thời trang", "Sức khỏe", "Giải trí", "Nhập thủ công (Khác)..."]
+            selected_niche_opt = c3.selectbox("Chủ đề (Niche)", niche_options)
+            
+            final_niche = selected_niche_opt
+            # Nếu chọn "Nhập thủ công" thì hiện ô input mới
+            if selected_niche_opt == "Nhập thủ công (Khác)...":
+                final_niche = c3.text_input("👉 Nhập tên chủ đề của bạn:", placeholder="Ví dụ: Phong thủy...")
+
             new_country = c4.selectbox("Quốc gia", ["US", "UK", "FR", "DE", "VN"])
             
             c5, c6 = st.columns(2)
@@ -219,11 +233,14 @@ def main_app():
             
             if st.form_submit_button("Thêm Account"):
                 if new_id and new_user:
+                    # Logic lấy Niche cuối cùng
+                    saved_niche = final_niche if final_niche else "Chưa set"
+
                     new_record = {
                         "id": new_id,
-                        "status": "Nuôi", # Mặc định mới thêm là đang nuôi
+                        "status": "Nuôi",
                         "username": new_user,
-                        "niche": new_niche,
+                        "niche": saved_niche, # Lưu giá trị text
                         "country": new_country,
                         "proxy_ip": new_ip,
                         "proxy_exp": new_exp.strftime('%Y-%m-%d'),
@@ -231,12 +248,13 @@ def main_app():
                         "gmv": 0.0,
                         "last_active": datetime.now().strftime('%Y-%m-%d')
                     }
+                    
                     current_data = load_data()
                     current_data.append(new_record)
                     save_data(current_data)
-                    st.success(f"Đã thêm {new_id} thành công!")
+                    st.success(f"Đã thêm **{new_id}** (Chủ đề: {saved_niche}) thành công!")
                 else:
-                    st.warning("Vui lòng nhập Tên máy và Username")
+                    st.warning("Vui lòng nhập Tên máy và Username!")
 
 if __name__ == "__main__":
     if check_login():
