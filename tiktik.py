@@ -2,26 +2,34 @@ import streamlit as st
 import pandas as pd
 import json
 import os
+import requests
+import time
 from datetime import datetime, timedelta, date
 
 # ==========================================
-# CẤU HÌNH & AUTH
+# CẤU HÌNH & AUTH (Đã nâng cấp bảo mật)
 # ==========================================
-ADMIN_USER = "admin"
-ADMIN_PASS = "mmo888" 
+# Cố gắng lấy pass từ secrets.toml, nếu không có thì dùng mặc định
+try:
+    ADMIN_USER = st.secrets["auth"]["username"]
+    ADMIN_PASS = st.secrets["auth"]["password"]
+except:
+    # Mặc định để bạn test ngay (Nên tạo file secrets.toml sau này)
+    ADMIN_USER = "admin"
+    ADMIN_PASS = "mmo888"
+
 DATA_FILE = 'tiktok_farm_v2.json'
 
-st.set_page_config(page_title="TikTok Farm Pro", page_icon="🚀", layout="wide")
+st.set_page_config(page_title="TikTok Farm Pro Max", page_icon="🚀", layout="wide")
 
-# CSS Tùy chỉnh
+# CSS Tùy chỉnh (Tối ưu Mobile & Giao diện tối)
 st.markdown("""
     <style>
-    button[title="Copy to clipboard"] {
-        font-size: 1.2rem !important; 
-        padding: 10px !important;
-    }
-    .stCode {
-        font-size: 16px !important;
+    /* Mobile Input Style */
+    .stTextInput input {
+        background-color: #262730;
+        color: #fff;
+        border: 1px solid #444;
     }
     .status-badge {
         font-weight: bold;
@@ -31,22 +39,24 @@ st.markdown("""
     .farm-days {
         color: #FFD700; 
         font-weight: bold;
-        font-size: 15px;
+        font-size: 14px;
     }
     .content-tag {
         color: #00BFFF;
         font-weight: bold;
+        font-size: 14px;
     }
-    /* Style cho nút xóa */
+    /* Ẩn nút check status mặc định của check video */
     div[data-testid="stExpander"] {
         border: 1px solid #444;
         border-radius: 8px;
+        margin-bottom: 10px;
     }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# HELPER: ICON TRẠNG THÁI
+# HELPER: ICON & TOOL CHECKER
 # ==========================================
 def get_status_config(status):
     if status == "Live": return "🟢", 0 
@@ -54,6 +64,31 @@ def get_status_config(status):
     if status == "Shadowban": return "❌", 2
     if status == "Die": return "💀", 3
     return "⚪", 4
+
+def check_tiktok_status_simple(username):
+    """
+    Check cơ bản trạng thái User.
+    LƯU Ý: TikTok chặn request server rất gắt. Đây chỉ là check cơ bản (HTTP Code).
+    Để chính xác 100% cần dùng Residential Proxy.
+    """
+    url = f"https://www.tiktok.com/@{username}"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=5)
+        # TikTok thường trả về 200 cho profile sống
+        if r.status_code == 200:
+            # Check thêm keyword trong HTML để chắc chắn không bị redirect login
+            if '"user":{"id":' in r.text or '"uniqueId":' in r.text:
+                return "Live"
+            return "Live (Cần check lại)" # Có thể bị redirect
+        elif r.status_code == 404:
+            return "Die"
+        else:
+            return "Unknown" # Có thể bị chặn IP
+    except:
+        return "Error"
 
 # ==========================================
 # BACKEND: XỬ LÝ DỮ LIỆU
@@ -63,8 +98,8 @@ def load_data():
         {
             "id": "iPhone 7-A",
             "status": "Live",
-            "username": "user_us_01",
-            "password": "pass_tiktok_123",
+            "username": "user_demo_01",
+            "password": "pass_demo_123",
             "niche": "Health",
             "content_type": "Reup Video",
             "country": "US",
@@ -84,17 +119,22 @@ def load_data():
     try:
         with open(DATA_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            today_str = datetime.now().strftime('%Y-%m-%d')
+            # Validate field thiếu
             for item in data:
                 if "password" not in item: item["password"] = ""
                 if "proxy_pass" not in item: item["proxy_pass"] = ""
-                if "date_added" not in item: item["date_added"] = today_str
-                if "content_type" not in item: item["content_type"] = ""
+                if "date_added" not in item: item["date_added"] = datetime.now().strftime('%Y-%m-%d')
             return data
     except:
         return default_data
 
 def save_data(data):
+    # Convert date objects to string before saving
+    for item in data:
+        for key, value in item.items():
+            if isinstance(value, (date, datetime)):
+                item[key] = value.strftime('%Y-%m-%d')
+
     with open(DATA_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
@@ -127,7 +167,7 @@ def check_login():
 def main_app():
     with st.sidebar:
         st.title("🎛️ Menu")
-        menu = st.radio("Chức năng:", ["Dashboard", "Quản lý & Copy", "Thêm Account"])
+        menu = st.radio("Chức năng:", ["Dashboard", "Quản lý & Copy", "Tool Check Live", "Thêm Account"])
         st.divider()
         if st.button("Đăng xuất"):
             st.session_state["authenticated"] = False
@@ -135,195 +175,202 @@ def main_app():
 
     raw_data = load_data()
     
-    # --- TAB 1: DASHBOARD ---
+    # --- TAB 1: DASHBOARD (NÂNG CẤP) ---
     if menu == "Dashboard":
         st.title("🚀 Tổng quan Farm")
+        
+        # Nút tải Backup
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            st.download_button(
+                label="📥 Tải Backup Data (.json)",
+                data=f,
+                file_name=f"backup_tiktok_{datetime.now().strftime('%Y%m%d')}.json",
+                mime="application/json"
+            )
+
         if not raw_data:
             st.warning("Chưa có dữ liệu.")
             return
 
         df = pd.DataFrame(raw_data)
         
-        c1, c2, c3 = st.columns(3)
+        # Metric
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("Tổng Acc", len(df))
-        
-        farm_accs = df[df['status'] == 'Nuôi']
-        avg_days = 0
-        if not farm_accs.empty and 'date_added' in farm_accs.columns:
-            today = datetime.now().date()
-            dates = pd.to_datetime(farm_accs['date_added'], errors='coerce').dt.date
-            total_days = sum([(today - d).days for d in dates if pd.notnull(d)])
-            avg_days = int(total_days / len(farm_accs)) if len(farm_accs) > 0 else 0
-
-        c2.metric("Đang nuôi", len(farm_accs), delta=f"TB: {avg_days} ngày")
+        c2.metric("Đang nuôi", len(df[df['status'] == 'Nuôi']))
+        c3.metric("Live (Sẵn sàng)", len(df[df['status'] == 'Live']))
         total_gmv = pd.to_numeric(df.get('gmv', 0), errors='coerce').sum()
-        c3.metric("Doanh thu", f"${total_gmv:.2f}")
+        c4.metric("Tổng Doanh thu", f"${total_gmv:,.2f}")
 
         st.divider()
-        st.subheader("⚠️ Cảnh báo Proxy")
-        today = datetime.now().date()
-        
-        for item in raw_data:
-            try:
-                p_date = datetime.strptime(str(item.get('proxy_exp')), '%Y-%m-%d').date()
-                days = (p_date - today).days
-                if days < 0:
-                    st.error(f"🔴 {item['id']}: Proxy Hết hạn {abs(days)} ngày!")
-                elif days <= 3:
-                    st.warning(f"🟡 {item['id']}: Proxy còn {days} ngày!")
-            except: pass
 
-    # --- TAB 2: QUẢN LÝ & COPY ---
+        # Chart & Warning Layout
+        col_chart1, col_chart2 = st.columns([2, 1])
+        
+        with col_chart1:
+            st.subheader("📊 Tỉ lệ Trạng thái")
+            if not df.empty:
+                status_counts = df['status'].value_counts()
+                st.bar_chart(status_counts, color="#FE2C55") # Màu đỏ TikTok
+        
+        with col_chart2:
+            st.subheader("⚠️ Cảnh báo Proxy")
+            today = datetime.now().date()
+            has_warning = False
+            
+            with st.container(height=300):
+                for item in raw_data:
+                    try:
+                        p_date = datetime.strptime(str(item.get('proxy_exp')), '%Y-%m-%d').date()
+                        days = (p_date - today).days
+                        if days < 0:
+                            st.error(f"🔴 {item['id']}: Hết hạn {abs(days)} ngày!")
+                            has_warning = True
+                        elif days <= 3:
+                            st.warning(f"🟡 {item['id']}: Còn {days} ngày!")
+                            has_warning = True
+                    except: pass
+                
+                if not has_warning:
+                    st.success("✅ Tất cả Proxy ổn định!")
+
+    # --- TAB 2: QUẢN LÝ & COPY (MOBILE OPTIMIZED) ---
     elif menu == "Quản lý & Copy":
         st.title("📱 Quản lý Account")
         
-        if not raw_data:
-            st.info("Chưa có account nào.")
-        else:
-            # Sort Logic
-            for item in raw_data:
-                icon, priority = get_status_config(item.get('status', 'Nuôi'))
-                item['_sort_priority'] = priority
-            sorted_data = sorted(raw_data, key=lambda x: (x['_sort_priority'], x['id']))
-            df = pd.DataFrame(sorted_data).drop(columns=['_sort_priority'])
-            
-            # --- 1. EDITOR TABLE ---
-            st.subheader("1. Cập nhật thông tin")
-            
-            today = datetime.now().date()
-            if "proxy_exp" in df.columns:
-                df["proxy_exp"] = pd.to_datetime(df["proxy_exp"], errors='coerce').dt.date
-            
-            # Tạo cột days_farmed
-            if "date_added" in df.columns:
-                df["days_farmed"] = df["date_added"].apply(
-                    lambda x: (today - pd.to_datetime(x).date()).days if x else 0
-                )
-
-            edited_df = st.data_editor(
-                df,
-                column_config={
-                    "status": st.column_config.SelectboxColumn("Trạng thái", options=["Live", "Shadowban", "Die", "Nuôi"], width="small"),
-                    "days_farmed": st.column_config.NumberColumn("Đã nuôi (Ngày)", min_value=0, step=1, required=True),
-                    "content_type": st.column_config.TextColumn("Loại Content", width="medium"),
-                    "niche": st.column_config.TextColumn("Chủ đề"),
-                    "password": st.column_config.TextColumn("Pass TikTok"),
-                    "proxy_pass": st.column_config.TextColumn("Pass Proxy"),
-                    "gmv": st.column_config.NumberColumn("GMV ($)", format="$%.2f"),
-                    "date_added": None, 
-                    "id": "Tên máy",
-                    "username": "User"
-                },
-                hide_index=True,
-                num_rows="dynamic",
-                use_container_width=True
+        # Sort Logic
+        for item in raw_data:
+            icon, priority = get_status_config(item.get('status', 'Nuôi'))
+            item['_sort_priority'] = priority
+        sorted_data = sorted(raw_data, key=lambda x: (x['_sort_priority'], x['id']))
+        df = pd.DataFrame(sorted_data).drop(columns=['_sort_priority'])
+        
+        # --- 1. EDITOR TABLE ---
+        st.subheader("1. Cập nhật thông tin")
+        today = datetime.now().date()
+        
+        if "days_farmed" not in df.columns:
+            df["days_farmed"] = df["date_added"].apply(
+                lambda x: (today - pd.to_datetime(x).date()).days if x else 0
             )
 
-            if st.button("💾 Lưu thay đổi", type="primary"):
-                try:
-                    save_list = edited_df.to_dict(orient='records')
-                    for item in save_list:
-                        # Logic chỉnh ngày nuôi
-                        if 'days_farmed' in item:
-                            new_days = int(item['days_farmed'])
-                            new_start_date = today - timedelta(days=new_days)
-                            item['date_added'] = new_start_date.strftime('%Y-%m-%d')
-                            del item['days_farmed']
+        edited_df = st.data_editor(
+            df,
+            column_config={
+                "status": st.column_config.SelectboxColumn("Trạng thái", options=["Live", "Shadowban", "Die", "Nuôi"], width="small"),
+                "days_farmed": st.column_config.NumberColumn("Đã nuôi (Ngày)"),
+                "gmv": st.column_config.NumberColumn("GMV ($)", format="$%.2f"),
+                "date_added": None, 
+                "id": "Tên máy",
+                "username": "User"
+            },
+            hide_index=True,
+            num_rows="dynamic",
+            use_container_width=True,
+            key="editor_main"
+        )
 
-                        if isinstance(item.get('proxy_exp'), (date, datetime)):
-                            item['proxy_exp'] = item['proxy_exp'].strftime('%Y-%m-%d')
-                        elif not item.get('proxy_exp'):
-                            item['proxy_exp'] = (today + timedelta(days=1)).strftime('%Y-%m-%d')
+        if st.button("💾 Lưu thay đổi", type="primary"):
+            try:
+                save_list = edited_df.to_dict(orient='records')
+                for item in save_list:
+                    # Logic chỉnh ngày nuôi ngược lại thành ngày bắt đầu
+                    if 'days_farmed' in item:
+                        new_days = int(item['days_farmed'])
+                        new_start_date = today - timedelta(days=new_days)
+                        item['date_added'] = new_start_date.strftime('%Y-%m-%d')
+                        del item['days_farmed']
                         
-                        if '_sort_priority' in item: del item['_sort_priority']
-                            
-                    save_data(save_list)
-                    st.success("Đã lưu dữ liệu!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Lỗi: {e}")
+                    if '_sort_priority' in item: del item['_sort_priority']
+                        
+                save_data(save_list)
+                st.success("Đã lưu dữ liệu!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Lỗi: {e}")
 
-            st.divider()
+        st.divider()
 
-            # --- TÍNH NĂNG MỚI: XÓA ACCOUNT HÀNG LOẠT ---
-            st.subheader("🗑️ Xóa Account (Hàng loạt)")
+        # --- 2. MOBILE COPY CARD ---
+        st.subheader("📋 Copy Nhanh (Giao diện Mobile)")
+        
+        search = st.text_input("🔍 Tìm nhanh (User/Máy):", placeholder="gõ tên...")
+        display_data = sorted_data
+        if search:
+            display_data = [d for d in display_data if search.lower() in d['id'].lower() or search.lower() in d['username'].lower()]
+
+        for acc in display_data:
+            icon, _ = get_status_config(acc.get('status', 'Nuôi'))
             
-            with st.expander("⚠️ Mở khu vực Xóa Account", expanded=False):
-                st.warning("Hành động này không thể hoàn tác. Hãy kiểm tra kỹ!")
+            # Tính ngày nuôi
+            days_diff = 0
+            try:
+                start_date = datetime.strptime(str(acc.get('date_added')), '%Y-%m-%d').date()
+                days_diff = (today - start_date).days
+            except: pass
+
+            with st.expander(f"{icon} {acc['id']} | {acc['username']}", expanded=False):
+                # Hiển thị Tag
+                st.markdown(f"<span class='content-tag'>🎬 {acc.get('content_type','None')}</span> • <span class='farm-days'>⏳ {days_diff} ngày</span>", unsafe_allow_html=True)
                 
-                # Tạo list option dạng: "iPhone 7-A | user_01"
-                delete_options = [f"{acc['id']} | {acc['username']} ({acc['status']})" for acc in sorted_data]
+                # Input để copy dễ dàng trên mobile (dùng text_input thay vì code)
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.text_input("User", value=acc['username'], key=f"u_{acc['id']}")
+                with c2:
+                    st.text_input("Pass", value=acc.get('password', ''), type="password", key=f"p_{acc['id']}")
                 
-                selected_to_delete = st.multiselect(
-                    "Chọn các máy muốn xóa vĩnh viễn:",
-                    options=delete_options
-                )
+                # Proxy section
+                st.caption("Proxy Info (IP:Port:User:Pass)")
+                proxy_str = f"{acc.get('proxy_ip','')}:{acc.get('proxy_pass','')}"
+                st.code(proxy_str, language="text")
                 
-                if selected_to_delete:
-                    st.write(f"Đang chọn xóa {len(selected_to_delete)} account.")
-                    if st.button("🔥 XÁC NHẬN XÓA NGAY"):
-                        # Lấy danh sách ID cần xóa (Tách chuỗi lấy phần đầu)
-                        ids_to_remove = [s.split(" | ")[0] for s in selected_to_delete]
-                        
-                        # Lọc giữ lại những acc KHÔNG nằm trong danh sách xóa
-                        new_data_list = [d for d in raw_data if d['id'] not in ids_to_remove]
-                        
-                        save_data(new_data_list)
-                        st.success(f"Đã xóa thành công {len(ids_to_remove)} account!")
+                # Nút hành động nhanh
+                bc1, bc2 = st.columns(2)
+                with bc1:
+                    if st.button("🗑️ Xóa", key=f"del_{acc['id']}"):
+                        new_list = [x for x in raw_data if x['id'] != acc['id']]
+                        save_data(new_list)
                         st.rerun()
 
-            st.divider()
-
-            # --- 2. MOBILE COPY CARD ---
-            st.subheader("📋 Copy Nhanh (Mobile)")
+    # --- TAB 3: TOOL CHECK LIVE (NEW) ---
+    elif menu == "Tool Check Live":
+        st.title("🕵️ Tool Check Live/Die")
+        st.warning("⚠️ Lưu ý: Tool dùng request cơ bản. Không nên spam liên tục tránh bị TikTok chặn IP máy chủ.")
+        
+        if st.button("Bắt đầu quét tất cả Account"):
+            progress_bar = st.progress(0)
+            status_log = st.empty()
             
-            col_search, col_filter = st.columns([1, 1])
-            search = col_search.text_input("🔍 Tìm kiếm:", placeholder="Tên máy, User...")
-            filter_status = col_filter.multiselect("Lọc trạng thái:", ["Live", "Nuôi", "Shadowban", "Die"])
+            updated_count = 0
             
-            display_data = sorted_data
-            if search:
-                display_data = [d for d in display_data if search.lower() in d['id'].lower() or search.lower() in d['username'].lower()]
-            if filter_status:
-                display_data = [d for d in display_data if d['status'] in filter_status]
+            for i, acc in enumerate(raw_data):
+                status_log.write(f"Đang check: **{acc['username']}**...")
+                
+                # Check status
+                new_status = check_tiktok_status_simple(acc['username'])
+                
+                # Cập nhật nếu phát hiện Die
+                if new_status == "Die" and acc['status'] != "Die":
+                    acc['status'] = "Die"
+                    updated_count += 1
+                
+                # Update progress
+                progress_bar.progress((i + 1) / len(raw_data))
+                time.sleep(1) # Delay nhẹ để tránh block
+            
+            # Lưu lại
+            if updated_count > 0:
+                save_data(raw_data)
+                st.success(f"Hoàn thành! Đã cập nhật {updated_count} account sang trạng thái DIE.")
+            else:
+                st.info("Hoàn thành! Các account vẫn ổn định (hoặc không thể xác định).")
+                
+            status_log.empty()
 
-            for acc in display_data:
-                icon, _ = get_status_config(acc.get('status', 'Nuôi'))
-                days_diff = 0
-                try:
-                    start_date = datetime.strptime(str(acc.get('date_added')), '%Y-%m-%d').date()
-                    days_diff = (today - start_date).days
-                except: pass
-
-                with st.expander(f"{icon} {acc['id']} | {acc['username']}", expanded=True):
-                    info_html = ""
-                    if acc.get('content_type'):
-                        info_html += f"<span class='content-tag'>🎬 {acc['content_type']}</span> "
-                    info_html += f" | <span class='farm-days'>⏳ Đã nuôi: {days_diff} ngày</span>"
-                    
-                    if info_html:
-                        st.markdown(info_html, unsafe_allow_html=True)
-                        st.divider() 
-
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.caption("User TikTok")
-                        st.code(acc['username'], language=None)
-                    with c2:
-                        st.caption("Pass TikTok")
-                        st.code(acc.get('password', ''), language=None)
-                    
-                    c3, c4 = st.columns(2)
-                    with c3:
-                        st.caption("Proxy IP")
-                        st.code(acc.get('proxy_ip', ''), language=None)
-                    with c4:
-                        st.caption("Proxy Pass")
-                        st.code(acc.get('proxy_pass', ''), language=None)
-
-    # --- TAB 3: THÊM ACCOUNT MỚI ---
+    # --- TAB 4: THÊM ACCOUNT ---
     elif menu == "Thêm Account":
-        st.title("➕ Thêm Account")
+        st.title("➕ Thêm Account Mới")
         
         with st.form("add_form"):
             c1, c2 = st.columns(2)
@@ -342,35 +389,25 @@ def main_app():
             final_niche = niche_opt
             if niche_opt == "Nhập thủ công...":
                 with n2:
-                    custom_niche = st.text_input("👉 Nhập tên chủ đề:")
-                    final_niche = custom_niche if custom_niche else "Chưa đặt tên"
+                    final_niche = st.text_input("👉 Nhập tên chủ đề:")
 
             st.markdown("---")
-            new_content_type = st.text_input("🎬 Loại Content (VD: Reup Phim...)", placeholder="Nhập loại content...")
+            new_content_type = st.text_input("🎬 Loại Content", placeholder="VD: Reup Phim...")
 
             st.markdown("---")
-            st.write("Cấu hình Proxy:")
             p1, p2 = st.columns(2)
             new_ip = p1.text_input("IP:Port")
-            new_prox_pass = p2.text_input("Proxy Password")
+            new_prox_pass = p2.text_input("Proxy User:Pass")
             
-            st.write("Thời hạn Proxy:")
-            proxy_duration_opt = st.radio(
-                "Chọn thời gian:", ["Nhập ngày cụ thể", "30 ngày", "60 ngày", "90 ngày"], 
-                horizontal=True, label_visibility="collapsed"
-            )
-            final_exp_date = None
-            if proxy_duration_opt == "Nhập ngày cụ thể":
+            proxy_duration_opt = st.radio("Thời hạn Proxy:", ["Nhập ngày", "30 ngày"], horizontal=True)
+            final_exp_date = datetime.now().date() + timedelta(days=30)
+            if proxy_duration_opt == "Nhập ngày":
                 final_exp_date = st.date_input("Chọn ngày hết hạn")
-            else:
-                days_to_add = int(proxy_duration_opt.split()[0])
-                final_exp_date = datetime.now().date() + timedelta(days=days_to_add)
-                st.info(f"📅 Proxy đến ngày: **{final_exp_date.strftime('%Y-%m-%d')}**")
 
             st.markdown("---")
-            init_days = st.number_input("⏳ Đã nuôi trước đó bao nhiêu ngày?", min_value=0, value=0)
+            init_days = st.number_input("⏳ Đã nuôi trước đó (ngày)?", min_value=0, value=0)
 
-            if st.form_submit_button("Thêm ngay"):
+            if st.form_submit_button("Thêm ngay", type="primary"):
                 if new_id and new_user:
                     start_date_val = datetime.now().date() - timedelta(days=init_days)
                     new_obj = {
@@ -378,7 +415,7 @@ def main_app():
                         "status": "Nuôi",
                         "username": new_user,
                         "password": new_pass,
-                        "niche": final_niche,
+                        "niche": final_niche if final_niche else "Unset",
                         "content_type": new_content_type,
                         "country": new_country,
                         "proxy_ip": new_ip,
